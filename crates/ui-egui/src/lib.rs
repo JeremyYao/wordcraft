@@ -103,6 +103,9 @@ pub struct Services {
     /// Asked every frame, so a change in the system's settings shows at once: the host answers
     /// from memory and does any slow asking elsewhere. Without the hook, animation effects stay on.
     pub animations_enabled: Option<Box<dyn Fn() -> Option<bool>>>,
+    /// Desktop: the text on the system clipboard, if any. Ctrl+V gets it from egui's paste event;
+    /// the ribbon and context-menu Paste read it here (#584).
+    pub clipboard_text: Option<Box<dyn Fn() -> Option<String>>>,
     /// Web: keep a font the user added (stored file name, original bytes) for the next visit
     /// (#582). Desktop fonts are stored by the font database itself, in the app's font folder.
     pub store_font: Option<Box<dyn Fn(&str, &[u8])>>,
@@ -480,6 +483,25 @@ impl WordApp {
                 self.session.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.title_stem());
             self.dialog = Some(dialogs::Dialog::SaveChanges { name, then: id.to_string(), params, document: self.session.document_id() });
             return Ok(json!({"pending": "saveChanges"}));
+        }
+        // The ribbon and context-menu Paste commands send no text: read the system clipboard's, as
+        // Ctrl+V's paste event carries it (#584).
+        let mut params = params;
+        if matches!(id, "edit.paste" | "edit.pasteText" | "edit.pasteMerge" | "edit.pasteSpecial")
+            && params.get("text").is_none()
+            && let Some(text) = self.services.clipboard_text.as_ref().and_then(|f| f()).filter(|t| !t.is_empty())
+            && let Some(o) = params.as_object_mut()
+        {
+            // Picture files copied in a file manager reach us as their paths: paste the pictures,
+            // as Ctrl+V does.
+            if id == "edit.paste"
+                && self.session.math.is_none()
+                && paste_picture::names_picture_files(&text)
+                && let Some(r) = paste_picture::paste(self)
+            {
+                return r;
+            }
+            o.insert("text".into(), Value::String(text));
         }
         // Paste without system clipboard text: a picture there is newer than our own copy (copying
         // here replaces it with text), so it wins (#45).

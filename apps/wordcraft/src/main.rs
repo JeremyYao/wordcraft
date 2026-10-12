@@ -143,6 +143,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: &egui::Context) -> Services {
         print: Some(print::hook()),
         clipboard_picture: Some(Box::new(clipboard_picture)),
         animations_enabled: Some(animations::hook(ctx)),
+        clipboard_text: Some(Box::new(|| arboard::Clipboard::new().ok()?.get_text().ok())),
         ..Default::default()
     }
 }
