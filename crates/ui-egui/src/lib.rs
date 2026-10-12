@@ -95,6 +95,12 @@ pub struct Services {
     /// Desktop: the picture on the system clipboard, if any — egui's paste only carries text
     /// (#45). Read when Paste finds no text; see [`paste_picture`].
     pub clipboard_picture: Option<Box<dyn Fn() -> Option<paste_picture::ClipboardPicture>>>,
+    /// Whether the system has animation effects on (Windows: Settings › Accessibility › Visual
+    /// effects › Animation effects; browsers: `prefers-reduced-motion`), or `None` when it doesn't
+    /// say. What "Use system setting" follows ([`theme::Animations`]); asked at start-up and each
+    /// time the window regains focus, so it should answer quickly. Without the hook, animation
+    /// effects stay on.
+    pub animations_enabled: Option<Box<dyn Fn() -> Option<bool>>>,
 }
 
 /// Files delivered asynchronously.
@@ -116,6 +122,9 @@ pub struct UiState {
     /// Interface size in percent (#475): scales the whole interface on top of the system's
     /// display scale. Junk or out-of-range saved values read as 100 % or are clamped to 80–200 %.
     pub interface_size: theme::InterfaceSize,
+    /// Animation effects (smooth scrolling, fades): on, off, or follow the system's setting, which
+    /// is the default. An unknown saved value reads as the default.
+    pub animations: theme::Animations,
     /// The dark-mode switch `ui.json` held before `theme` (#115): read once to migrate, never written.
     #[serde(rename = "dark", skip_serializing)]
     pub(crate) legacy_dark: Option<bool>,
@@ -187,6 +196,7 @@ impl Default for UiState {
             recent_symbols: Vec::new(),
             theme: theme::Appearance::default(),
             interface_size: theme::InterfaceSize::default(),
+            animations: theme::Animations::default(),
             legacy_dark: None,
             nav_tab: "headings".into(),
             show_discord: true,
@@ -270,6 +280,12 @@ pub struct WordApp {
     fonts_frames: u32,
     /// The interface theme setting last installed in egui ([`theme::apply`]).
     applied_theme: Option<theme::Appearance>,
+    /// What the system last said about its animation effects ([`Services::animations_enabled`]),
+    /// and whether it has been asked yet.
+    system_animations: Option<bool>,
+    system_animations_read: bool,
+    /// Whether egui's own animations were last switched on or off ([`theme::apply_animations`]).
+    applied_animations: Option<bool>,
     pub frame_ms: f64,
     /// The window title last sent; a viewport command schedules a repaint, so only send changes.
     sent_title: String,
@@ -348,6 +364,9 @@ impl WordApp {
             want_system_cjk: false,
             fonts_frames: 0,
             applied_theme: None,
+            system_animations: None,
+            system_animations_read: false,
+            applied_animations: None,
             frame_ms: 0.0,
             sent_title: String::new(),
             quit_requested: false,
@@ -685,6 +704,23 @@ impl WordApp {
         self.ui.theme.is_dark(self.ctx.as_ref().and_then(egui::Context::system_theme))
     }
 
+    /// Whether animation effects are on: the Animation effects setting, where `System` follows
+    /// what the system last reported (on when it reports nothing).
+    pub fn animations_on(&self) -> bool {
+        self.ui.animations.enabled(self.system_animations)
+    }
+
+    /// What the system last said about its animation effects (`None`: it doesn't say).
+    pub fn system_animations(&self) -> Option<bool> {
+        self.system_animations
+    }
+
+    /// Ask the host for the system's animation setting.
+    fn read_system_animations(&mut self) {
+        self.system_animations = self.services.animations_enabled.as_ref().and_then(|ask| ask());
+        self.system_animations_read = true;
+    }
+
     /// Commands that live in the UI layer.
     fn ui_command(&mut self, id: &str, p: &Value) -> Option<Result<Value, String>> {
         let s = |k: &str| p.get(k).and_then(Value::as_str);
@@ -761,6 +797,18 @@ impl WordApp {
                     }
                 }
                 json!({"percent": self.ui.interface_size.percent()})
+            }
+            "ui.animations" => {
+                // `system` (follow the system's animation setting), `on` or `off`; no value reads
+                // it. `enabled` is what that comes to now, `system` what the system reports.
+                if let Some(v) = s("value") {
+                    match theme::Animations::from_code(v) {
+                        Some(a) => self.ui.animations = a,
+                        None => return Some(Err(format!("unknown animations setting {v:?}; use system, on or off"))),
+                    }
+                }
+                self.read_system_animations();
+                json!({"animations": self.ui.animations.code(), "enabled": self.animations_on(), "system": self.system_animations})
             }
             "ui.language" => {
                 // `auto` (follow the system) or a language code; anything else is an error.
@@ -967,6 +1015,17 @@ impl WordApp {
         if ctx.zoom_factor() != zoom {
             ctx.set_zoom_factor(zoom);
         }
+        // Animation effects: the system's setting is changed in the system's settings, away from
+        // this window, so it is read at start-up and again whenever the window regains focus.
+        let regained_focus = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true))));
+        if regained_focus || !self.system_animations_read {
+            self.read_system_animations();
+        }
+        let animate = self.animations_on();
+        if self.applied_animations != Some(animate) {
+            theme::apply_animations(ctx, animate);
+            self.applied_animations = Some(animate);
+        }
         if self.ctx.is_none() {
             self.ctx = Some(ctx.clone());
         }
@@ -1087,6 +1146,11 @@ impl WordApp {
         let t0 = now_ms();
         let ctx = ui.ctx().clone();
         i18n::set_current(i18n::Lang::from_pref(&self.ui.language));
+        // Animation effects off: egui's scroll areas get a wheel notch whole, not eased in.
+        if !self.animations_on() {
+            let opts = ctx.options(|o| o.input_options);
+            ctx.input_mut(|i| i.smooth_scroll_delta = scroll::unsmoothed_scroll(i, &opts));
+        }
         // Fonts installed by `logic` take effect on the next frame.
         if self.fonts_frames < 2 {
             self.fonts_frames += 1;
@@ -1613,6 +1677,110 @@ mod tests {
         let notch = crate::scroll::notch_px(a.canvas.scale / crate::canvas::PX_PER_PT);
         assert!(first > 0.0 && first < notch, "a notch eases in: {first}");
         assert!((a.canvas.scroll_offset.y - at - notch).abs() < 0.5, "a notch scrolls {notch}: {}", a.canvas.scroll_offset.y - at);
+    }
+
+    /// An app whose host reports the system's animation setting as `system` holds it.
+    fn app_with_system_animations(system: &std::rc::Rc<std::cell::Cell<Option<bool>>>) -> WordApp {
+        let system = system.clone();
+        let services = Services { animations_enabled: Some(Box::new(move || system.get())), ..Default::default() };
+        WordApp::new(Session::new(wordcraft_doc::Document::new()), services)
+    }
+
+    /// Animation effects: "Use system setting" (the default) follows what the host reports and is
+    /// on when it reports nothing; On and Off ignore the system. The choice is kept between runs.
+    #[test]
+    fn animation_effects_setting_follows_the_system_and_survives_a_restart() {
+        use theme::Animations;
+        for (setting, system, on) in [
+            (Animations::System, None, true),
+            (Animations::System, Some(true), true),
+            (Animations::System, Some(false), false),
+            (Animations::On, Some(false), true),
+            (Animations::Off, Some(true), false),
+            (Animations::Off, None, false),
+        ] {
+            assert_eq!(setting.enabled(system), on, "{setting:?} with the system at {system:?}");
+        }
+        // No host hook (tests, headless screenshots): nothing is reported, so they are on.
+        let mut a = app();
+        assert_eq!(a.run("ui.animations", json!({})).unwrap(), json!({"animations": "system", "enabled": true, "system": null}));
+        // The system has them off, as Windows reports with Animation effects switched off.
+        let system = std::rc::Rc::new(std::cell::Cell::new(Some(false)));
+        let mut a = app_with_system_animations(&system);
+        assert_eq!(a.run("ui.animations", json!({})).unwrap(), json!({"animations": "system", "enabled": false, "system": false}));
+        assert_eq!(a.run("ui.animations", json!({"value": "On"})).unwrap()["enabled"], true);
+        system.set(Some(true));
+        assert_eq!(a.run("ui.animations", json!({"value": "off"})).unwrap(), json!({"animations": "off", "enabled": false, "system": true}));
+        assert!(a.run("ui.animations", json!({"value": "sometimes"})).is_err());
+        assert_eq!(a.ui.animations, Animations::Off, "a rejected value keeps the setting");
+        let saved = serde_json::to_string(&a.prefs()).unwrap();
+        assert!(saved.contains(r#""animations":"off""#), "{saved}");
+        let mut b = app();
+        b.apply_prefs(serde_json::from_str(&saved).unwrap());
+        assert_eq!(b.ui.animations, Animations::Off);
+        assert!(!b.animations_on());
+        // Preferences from before the setting, or with a value it doesn't know, follow the system.
+        for raw in [r#"{"tab": "Insert"}"#, r#"{"animations": "wobbly", "tab": "Insert"}"#, r#"{"animations": 3, "tab": "Insert"}"#] {
+            let ui = UiState::from_json(raw.as_bytes()).unwrap();
+            assert_eq!((ui.animations, ui.tab.as_str()), (Animations::System, "Insert"), "{raw}");
+        }
+    }
+
+    /// With the system's animation effects off (what Windows reports with Settings › Accessibility ›
+    /// Visual effects › Animation effects off), a wheel notch scrolls the page its whole distance
+    /// in one frame and egui's own fades and scroll glides are off. The system's setting is read
+    /// again when the window regains focus.
+    #[test]
+    fn wheel_notches_land_at_once_with_animation_effects_off() {
+        let ctx = egui::Context::default();
+        let system = std::rc::Rc::new(std::cell::Cell::new(Some(false)));
+        let mut a = app_with_system_animations(&system);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 600.0));
+        let mut t = 0.0;
+        let mut frame = |a: &mut WordApp, events: Vec<egui::Event>| {
+            t += 1.0 / 60.0;
+            let input = egui::RawInput { events, time: Some(t), screen_rect: Some(screen), ..Default::default() };
+            ctx.run_ui(input, |ui| {
+                a.logic(ui.ctx());
+                a.ui(ui);
+            })
+            .drop_without_applying_deltas();
+        };
+        for _ in 0..3 {
+            frame(&mut a, Vec::new());
+        }
+        assert!(!a.animations_on());
+        assert_eq!(ctx.global_style().animation_time, 0.0, "no fades");
+        assert_eq!(ctx.global_style().scroll_animation, egui::style::ScrollAnimation::none(), "no glide to the caret");
+        let over_page = a.canvas.canvas_rect.unwrap().center();
+        frame(&mut a, vec![egui::Event::PointerMoved(over_page)]);
+        let notch_down = || egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let notch = crate::scroll::notch_px(a.canvas.scale / crate::canvas::PX_PER_PT);
+        let at = a.canvas.scroll_offset.y;
+        frame(&mut a, vec![notch_down()]);
+        let landed = a.canvas.scroll_offset.y;
+        assert!((landed - at - notch).abs() < 0.5, "the whole notch ({notch}) lands in its frame: {}", landed - at);
+        for _ in 0..30 {
+            frame(&mut a, Vec::new());
+        }
+        assert_eq!(a.canvas.scroll_offset.y, landed, "nothing is left to ease in");
+        // Animation effects are switched back on in the system's settings: nothing changes until
+        // the window has the focus again.
+        system.set(Some(true));
+        frame(&mut a, Vec::new());
+        assert!(!a.animations_on());
+        frame(&mut a, vec![egui::Event::WindowFocused(true)]);
+        assert!(a.animations_on());
+        assert_eq!(ctx.global_style().animation_time, egui::Style::default().animation_time);
+        assert_eq!(ctx.global_style().scroll_animation, egui::Style::default().scroll_animation);
+        frame(&mut a, vec![notch_down()]);
+        let first = a.canvas.scroll_offset.y - landed;
+        assert!(first > 0.0 && first < notch, "a notch eases in again: {first}");
     }
 
     /// Issue #123: zoomed out, pages sit side by side, and clicks map to the page under the pointer.

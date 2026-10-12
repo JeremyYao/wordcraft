@@ -178,8 +178,16 @@ fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>) -> Services
         print: Some(Box::new(print_pdf)),
         inbox: Some(inbox),
         on_dirty: Some(Box::new(move |d| dirty.set(d))),
+        animations_enabled: Some(Box::new(animations_enabled)),
         ..Default::default()
     }
+}
+
+/// Whether the system has animation effects on, as the browser passes it on: off when the
+/// `prefers-reduced-motion: reduce` media query matches. `None` when the browser can't say.
+fn animations_enabled() -> Option<bool> {
+    let reduce = web_sys::window()?.match_media("(prefers-reduced-motion: reduce)").ok()??;
+    Some(!reduce.matches())
 }
 
 /// Closing, reloading or leaving the tab with unsaved changes asks first. Browsers show their own

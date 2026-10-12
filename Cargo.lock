@@ -5010,6 +5010,7 @@ dependencies = [
  "pollster 0.4.0",
  "rfd",
  "serde_json",
+ "windows",
  "winresource",
  "wordcraft-control-key",
  "wordcraft-doc",

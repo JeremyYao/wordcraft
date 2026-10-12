@@ -32,6 +32,13 @@ winresource = "0.1"
 # workspace forbids) behind a safe API. Pinned exactly: review the diff before bumping.
 fmv-macos-events = "=0.1.0"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# The system's Animation effects setting (Settings › Accessibility › Visual effects), read through
+# the Windows Runtime's UISettings: a safe API, where the Win32 call needs unsafe, which our
+# workspace forbids. Already in the build through wgpu and AccessKit, at this version; this adds
+# only the `UI_ViewManagement` bindings.
+windows = { version = "0.62", features = ["UI_ViewManagement"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
 # Waits for an `rfd::AsyncFileDialog` on a background thread (the dialogs don't block the UI, #94);

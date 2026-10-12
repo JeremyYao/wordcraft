@@ -9,6 +9,7 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod animations;
 #[cfg(target_os = "macos")]
 mod apple_events;
 mod control_server;
@@ -121,12 +122,14 @@ fn save_prefs(app: &WordApp) {
 }
 
 /// Native file dialogs, shown without blocking the window (`file_dialogs`, #94), File › Print
-/// through the system's PDF viewer (`print`, #15), and pictures on the system clipboard (#45).
+/// through the system's PDF viewer (`print`, #15), pictures on the system clipboard (#45), and
+/// the system's animation setting (`animations`).
 fn services(file_dialog: file_dialogs::Hook) -> Services {
     Services {
         file_dialog: Some(file_dialog),
         print: Some(print::hook()),
         clipboard_picture: Some(Box::new(clipboard_picture)),
+        animations_enabled: Some(Box::new(animations::system_enabled)),
         ..Default::default()
     }
 }

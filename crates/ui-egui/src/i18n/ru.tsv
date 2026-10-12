@@ -2359,3 +2359,11 @@ preview	Title	Пример
 	Typing replaces selected text	Ввод заменяет выделенный текст
 	Update fields before printing	Обновлять поля перед печатью
 	Use the Insert key to switch overtype on and off	Клавиша Insert включает и выключает режим замены
+	Visual effects	Визуальные эффекты
+	Animation effects:	Эффекты анимации:
+	On	Включено
+	Off	Выключено
+	Smooth scrolling and zooming, and menus and buttons that fade in. Off shows every change at once.	Плавная прокрутка и масштабирование, а также плавное появление меню и кнопок. Если выбрано «Выключено», все изменения отображаются сразу.
+	Your system has animation effects turned on.	В системе эффекты анимации включены.
+	Your system has animation effects turned off.	В системе эффекты анимации выключены.
+	Your system doesn't report an animation setting, so animation effects stay on.	Система не сообщает о настройке анимации, поэтому эффекты анимации остаются включёнными.

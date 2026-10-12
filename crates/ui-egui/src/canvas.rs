@@ -374,7 +374,10 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
     app.canvas.canvas_rect = Some(area);
     // Ctrl/⌘ + wheel (and trackpad pinch) zooms the document, like Word. egui reports both as a
     // zoom factor and doesn't scroll for them. Start from the shown scale so fit modes zoom too.
-    let zoom_delta = ui.input(|i| i.zoom_delta());
+    // With animation effects off a wheel notch zooms its whole step at once.
+    let animate = app.animations_on();
+    let opts = ui.ctx().options(|o| o.input_options);
+    let zoom_delta = ui.input(|i| crate::scroll::zoom_delta(i, &opts, animate));
     if (zoom_delta - 1.0).abs() > 1e-3 && ui.rect_contains_pointer(area) {
         let pct = (app.canvas.scale / PX_PER_PT * zoom_delta * 100.0).clamp(10.0, 500.0);
         let _ = app.run("view.zoom", json!({"value": pct}));
@@ -409,14 +412,16 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
     let mut origin = area.min;
     let mut ui_area = ui.new_child(egui::UiBuilder::new().max_rect(area));
     // The canvas scrolls itself on wheel/touchpad input (crate::scroll): touchpads 1:1 with
-    // momentum, wheel notches eased in. Applied before drawing, so it shows this frame.
+    // momentum, wheel notches eased in (or all at once with animation effects off). Applied
+    // before drawing, so it shows this frame.
     let hovered = ui.rect_contains_pointer(area) && ui.ctx().dragged_id().is_none();
     let notch = crate::scroll::notch_px(app.canvas.scale / PX_PER_PT);
-    let opts = ui.ctx().options(|o| o.input_options);
-    let delta = ui.input(|i| app.canvas.wheel.frame(i, &opts, hovered, notch, area.height()));
+    let delta = ui.input(|i| app.canvas.wheel.frame(i, &opts, hovered, notch, area.height(), animate));
     let mut scroll_area = egui::ScrollArea::both()
         .id_salt("canvas_scroll")
         .auto_shrink([false, false])
+        // Bringing the caret into view glides there, or jumps with animation effects off.
+        .animated(animate)
         .scroll_source(egui::scroll_area::ScrollSource { mouse_wheel: false, ..Default::default() });
     if delta != egui::Vec2::ZERO {
         let before = app.canvas.scroll_offset;
