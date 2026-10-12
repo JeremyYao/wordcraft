@@ -165,23 +165,29 @@ mod watching {
         let portal = Proxy::new(&connection, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings")?;
         // Listen before the first read, so a change between the two isn't missed.
         let changes = portal.receive_signal("SettingChanged")?;
-        // What each of the settings says, in the order of `KEYS`.
-        let mut answers = KEYS.map(|(namespace, key)| read_setting(&portal, namespace, key).and_then(|value| says(namespace, key, &value)));
         // The files are read once, the first time the portal has nothing to say.
         let mut files = None;
-        let mut answer = |answers: [Option<bool>; 3]| combine(answers).or_else(|| *files.get_or_insert_with(read_files));
-        publish(answer(answers));
+        let mut ask = || ask_portal(&portal).or_else(|| *files.get_or_insert_with(read_files));
+        publish(ask());
         // A setting can turn up later (KDE's has no value while the speed is at its default), so
-        // the changes are followed whatever the portal knew at first.
+        // the changes are followed whatever the portal knew at first. Every setting is asked
+        // again, not just the one announced: KDE announces a new animation speed only as the
+        // cross-desktop preference, and its own setting must not be left at the old value.
         for change in changes {
-            let Ok((namespace, key, value)) = change.body().deserialize::<(String, String, OwnedValue)>() else { continue };
-            let slot = KEYS.iter().position(|k| *k == (namespace.as_str(), key.as_str())).and_then(|i| answers.get_mut(i));
-            if let Some(slot) = slot {
-                *slot = reading(&value, 0).and_then(|value| says(&namespace, &key, &value));
-                publish(answer(answers));
+            let ours = change
+                .body()
+                .deserialize::<(String, String, OwnedValue)>()
+                .is_ok_and(|(namespace, key, _)| KEYS.contains(&(namespace.as_str(), key.as_str())));
+            if ours {
+                publish(ask());
             }
         }
         Ok(())
+    }
+
+    /// What the portal's settings come to; `None` when it has none of them.
+    fn ask_portal(portal: &Proxy<'_>) -> Option<bool> {
+        combine(KEYS.map(|(namespace, key)| read_setting(portal, namespace, key).and_then(|value| says(namespace, key, &value))))
     }
 
     /// One setting from the portal; `None` when it doesn't have it.
