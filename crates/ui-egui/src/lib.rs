@@ -97,11 +97,11 @@ pub struct Services {
     /// Desktop: the picture on the system clipboard, if any — egui's paste only carries text
     /// (#45). Read when Paste finds no text; see [`paste_picture`].
     pub clipboard_picture: Option<Box<dyn Fn() -> Option<paste_picture::ClipboardPicture>>>,
-    /// Whether the system has animation effects on (Windows: Settings › Accessibility › Visual
-    /// effects › Animation effects; browsers: `prefers-reduced-motion`), or `None` when it doesn't
-    /// say. What "Use system setting" follows ([`theme::Animations`]); asked at start-up and each
-    /// time the window regains focus, so it should answer quickly. Without the hook, animation
-    /// effects stay on.
+    /// Whether the system has animation effects on (Windows: Animation effects; macOS: Reduce
+    /// motion; Linux and the BSDs: the desktop's setting; browsers: `prefers-reduced-motion`), or
+    /// `None` when it doesn't say. What "Use system setting" follows ([`theme::Animations`]).
+    /// Asked every frame, so a change in the system's settings shows at once: the host answers
+    /// from memory and does any slow asking elsewhere. Without the hook, animation effects stay on.
     pub animations_enabled: Option<Box<dyn Fn() -> Option<bool>>>,
 }
 
@@ -291,10 +291,8 @@ pub struct WordApp {
     fonts_frames: u32,
     /// The interface theme setting last installed in egui ([`theme::apply`]).
     applied_theme: Option<theme::Appearance>,
-    /// What the system last said about its animation effects ([`Services::animations_enabled`]),
-    /// and whether it has been asked yet.
+    /// What the system last said about its animation effects ([`Services::animations_enabled`]).
     system_animations: Option<bool>,
-    system_animations_read: bool,
     /// Whether egui's own animations were last switched on or off ([`theme::apply_animations`]).
     applied_animations: Option<bool>,
     pub frame_ms: f64,
@@ -377,7 +375,6 @@ impl WordApp {
             fonts_frames: 0,
             applied_theme: None,
             system_animations: None,
-            system_animations_read: false,
             applied_animations: None,
             frame_ms: 0.0,
             sent_title: String::new(),
@@ -730,7 +727,6 @@ impl WordApp {
     /// Ask the host for the system's animation setting.
     fn read_system_animations(&mut self) {
         self.system_animations = self.services.animations_enabled.as_ref().and_then(|ask| ask());
-        self.system_animations_read = true;
     }
 
     /// Commands that live in the UI layer.
@@ -1041,12 +1037,9 @@ impl WordApp {
         if ctx.zoom_factor() != zoom {
             ctx.set_zoom_factor(zoom);
         }
-        // Animation effects: the system's setting is changed in the system's settings, away from
-        // this window, so it is read at start-up and again whenever the window regains focus.
-        let regained_focus = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true))));
-        if regained_focus || !self.system_animations_read {
-            self.read_system_animations();
-        }
+        // Animation effects: the host is asked every frame what the system says (it answers from
+        // memory), so a change made in the system's settings is followed without a restart.
+        self.read_system_animations();
         let animate = self.animations_on();
         if self.applied_animations != Some(animate) {
             theme::apply_animations(ctx, animate);
@@ -1756,8 +1749,8 @@ mod tests {
 
     /// With the system's animation effects off (what Windows reports with Settings › Accessibility ›
     /// Visual effects › Animation effects off), a wheel notch scrolls the page its whole distance
-    /// in one frame and egui's own fades and scroll glides are off. The system's setting is read
-    /// again when the window regains focus.
+    /// in one frame and egui's own fades and scroll glides are off. A change of the system's
+    /// setting is followed from the next frame.
     #[test]
     fn wheel_notches_land_at_once_with_animation_effects_off() {
         let ctx = egui::Context::default();
@@ -1797,12 +1790,9 @@ mod tests {
             frame(&mut a, Vec::new());
         }
         assert_eq!(a.canvas.scroll_offset.y, landed, "nothing is left to ease in");
-        // Animation effects are switched back on in the system's settings: nothing changes until
-        // the window has the focus again.
+        // Animation effects are switched back on in the system's settings: the next frame has it.
         system.set(Some(true));
         frame(&mut a, Vec::new());
-        assert!(!a.animations_on());
-        frame(&mut a, vec![egui::Event::WindowFocused(true)]);
         assert!(a.animations_on());
         assert_eq!(ctx.global_style().animation_time, egui::Style::default().animation_time);
         assert_eq!(ctx.global_style().scroll_animation, egui::Style::default().scroll_animation);

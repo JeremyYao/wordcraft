@@ -5006,6 +5006,7 @@ dependencies = [
  "fmv-macos-events",
  "getrandom 0.3.4",
  "log",
+ "objc2-app-kit 0.3.2",
  "open",
  "pollster 0.4.0",
  "rfd",
@@ -5016,6 +5017,7 @@ dependencies = [
  "wordcraft-doc",
  "wordcraft-engine",
  "wordcraft-ui-egui",
+ "zbus",
 ]
 
 [[package]]

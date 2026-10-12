@@ -130,8 +130,9 @@ impl From<InterfaceSize> for u16 {
 
 /// The Animation effects setting (File › Options › Accessibility, `ui.animations`): on, off, or
 /// `System`, which follows the system's own setting as the host reports it
-/// ([`Services::animations_enabled`](crate::Services::animations_enabled): Windows' Settings ›
-/// Accessibility › Visual effects › Animation effects, a browser's `prefers-reduced-motion`).
+/// ([`Services::animations_enabled`](crate::Services::animations_enabled): Windows' Animation
+/// effects, macOS' Reduce motion, the Linux/BSD desktop's setting, a browser's
+/// `prefers-reduced-motion`).
 /// Off: wheel notches scroll and zoom at once ([`crate::scroll`]) and nothing fades or glides
 /// ([`apply_animations`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

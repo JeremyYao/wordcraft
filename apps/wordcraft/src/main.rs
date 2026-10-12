@@ -124,12 +124,12 @@ fn save_prefs(app: &WordApp) {
 /// Native file dialogs, shown without blocking the window (`file_dialogs`, #94), File › Print
 /// through the system's PDF viewer (`print`, #15), pictures on the system clipboard (#45), and
 /// the system's animation setting (`animations`).
-fn services(file_dialog: file_dialogs::Hook) -> Services {
+fn services(file_dialog: file_dialogs::Hook, ctx: &egui::Context) -> Services {
     Services {
         file_dialog: Some(file_dialog),
         print: Some(print::hook()),
         clipboard_picture: Some(Box::new(clipboard_picture)),
-        animations_enabled: Some(Box::new(animations::system_enabled)),
+        animations_enabled: Some(animations::hook(ctx)),
         ..Default::default()
     }
 }
@@ -230,7 +230,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let doc = if sample { wordcraft_engine::sample::sample_document() } else { wordcraft_doc::Document::new() };
             let (file_dialog, dialogs) = file_dialogs::hook(&cc.egui_ctx);
-            let mut app = WordApp::new(Session::new(doc), services(file_dialog));
+            let mut app = WordApp::new(Session::new(doc), services(file_dialog, &cc.egui_ctx));
             load_prefs(&mut app);
             app.ui.window = restored;
             app.integrated_titlebar = cfg!(target_os = "macos");
