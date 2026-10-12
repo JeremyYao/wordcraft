@@ -404,15 +404,21 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
     app.canvas.canvas_rect = Some(area);
     // Ctrl/⌘ + wheel (and trackpad pinch) zooms the document, like Word. egui reports both as a
     // zoom factor and doesn't scroll for them. Start from the shown scale so fit modes zoom too.
-    // With animation effects off a wheel notch zooms its whole step at once.
+    // With animation effects off the wheel zooms in whole steps, each at once.
     let animate = app.animations_on();
     let opts = ui.ctx().options(|o| o.input_options);
-    let zoom_delta = ui.input(|i| crate::scroll::zoom_delta(i, &opts, animate));
+    let zoom_delta = ui.input(|i| app.canvas.wheel.zoom(i, &opts, animate));
     if (zoom_delta - 1.0).abs() > 1e-3 && ui.rect_contains_pointer(area) {
         let pct = (app.canvas.scale / PX_PER_PT * zoom_delta * 100.0).clamp(10.0, 500.0);
         let _ = app.run("view.zoom", json!({"value": pct}));
     }
     let geo = geometry(app, &layout, area.size() - vec2(14.0, 0.0));
+    // The status bar's zoom readout and slider were laid out before this, from the last frame's
+    // scale: after a zoom change draw again at once, so they follow in the next frame rather than
+    // whenever something else next repaints (the caret's blink).
+    if (geo.scale - app.canvas.scale).abs() > 1e-6 {
+        ui.ctx().request_repaint();
+    }
     app.canvas.scale = geo.scale;
     sync_fit_zoom(app, geo.scale);
     // Zooming or resizing reflowed the pages into a different number of columns: the caret's page
@@ -483,21 +489,11 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             let Some(page) = layout.pages.get(i) else { continue };
             let scale_px = (geo.scale * ppp).min(max_tex / page.w.max(1.0)).min(max_tex / page.h.clamp(1.0, 1e6)).max(0.05);
             let key = page_key(app, page, scale_px, dim_body);
-            let fresh = app.canvas.textures.get(&i).is_some_and(|(k, _)| *k == key);
-            let current_scale = geo.scale * ppp;
-            let visual_sr = if fresh && (scale_px - current_scale).abs() <= 0.0001_f32.max(current_scale.abs() * 0.0001) {
-                app.canvas.textures.get(&i).map_or(sr, |(_, tex)| texel_aligned_rect(sr, tex.size_vec2(), ppp))
-            } else {
-                sr
-            };
-            rects.push(visual_sr);
-            if !sr.intersects(ui.clip_rect().expand(200.0)) {
-                continue;
-            }
-            // Shadow and paper.
-            painter.rect_filled(visual_sr.translate(vec2(0.0, 2.0)).expand(1.5), 1.0, t.page_shadow);
-            painter.rect_filled(visual_sr, 0.0, if dark_page { Color32::from_gray(dark_paper) } else { Color32::WHITE });
-            if !fresh && (rendered < 2 || !app.canvas.textures.contains_key(&i) && rendered < 4) {
+            let mut fresh = app.canvas.textures.get(&i).is_some_and(|(k, _)| *k == key);
+            let visible = sr.intersects(ui.clip_rect().expand(200.0));
+            // Render before placing the page: a page re-rendered in this frame (a zoom step, an
+            // edit) then sits on the pixel grid in this frame too, rather than a frame later.
+            if visible && !fresh && (rendered < 2 || !app.canvas.textures.contains_key(&i) && rendered < 4) {
                 let mut opts = screen_render_options();
                 opts.display.marks = app.session.view.marks;
                 opts.display.always = app.session.prefs.marks;
@@ -524,9 +520,23 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     }
                 }
                 rendered += 1;
-            } else if !fresh {
+                fresh = true;
+            } else if visible && !fresh {
                 ui.ctx().request_repaint();
             }
+            let current_scale = geo.scale * ppp;
+            let visual_sr = if fresh && (scale_px - current_scale).abs() <= 0.0001_f32.max(current_scale.abs() * 0.0001) {
+                app.canvas.textures.get(&i).map_or(sr, |(_, tex)| texel_aligned_rect(sr, tex.size_vec2(), ppp))
+            } else {
+                sr
+            };
+            rects.push(visual_sr);
+            if !visible {
+                continue;
+            }
+            // Shadow and paper.
+            painter.rect_filled(visual_sr.translate(vec2(0.0, 2.0)).expand(1.5), 1.0, t.page_shadow);
+            painter.rect_filled(visual_sr, 0.0, if dark_page { Color32::from_gray(dark_paper) } else { Color32::WHITE });
             if let Some((_, tex)) = app.canvas.textures.get(&i) {
                 painter.image(tex.id(), visual_sr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             }

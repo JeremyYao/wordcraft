@@ -1784,6 +1784,73 @@ mod tests {
         assert!(first > 0.0 && first < notch, "a notch eases in again: {first}");
     }
 
+    /// With animation effects off a zoom step is finished in its own frame: Ctrl+wheel zooms the
+    /// notch's whole step at once, the page is already placed and drawn as it will stay, and the
+    /// status bar's zoom readout follows in the very next frame. Turns that arrive in small pieces
+    /// (a touchpad pinch on Windows) add up to a step first rather than each zooming a little.
+    #[test]
+    fn zoom_steps_land_finished_with_animation_effects_off() {
+        let ctx = egui::Context::default();
+        let system = std::rc::Rc::new(std::cell::Cell::new(Some(false)));
+        let mut a = app_with_system_animations(&system);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+        let mut t = 0.0;
+        // One frame; returns how soon it asked to be drawn again.
+        let mut frame = |a: &mut WordApp, events: Vec<egui::Event>| {
+            t += 1.0 / 60.0;
+            let input = egui::RawInput { events, time: Some(t), screen_rect: Some(screen), ..Default::default() };
+            let out = ctx.run_ui(input, |ui| {
+                a.logic(ui.ctx());
+                a.ui(ui);
+            });
+            let again = out.viewport_output.values().map(|v| v.repaint_delay).min();
+            out.drop_without_applying_deltas();
+            again
+        };
+        for _ in 0..3 {
+            frame(&mut a, Vec::new());
+        }
+        let over_page = a.canvas.canvas_rect.unwrap().center();
+        frame(&mut a, vec![egui::Event::PointerMoved(over_page)]);
+        frame(&mut a, Vec::new());
+        let ctrl_wheel = |notches: f32| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, notches),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let opts = egui::InputOptions::default();
+        let notch_zoom = (opts.scroll_zoom_speed * opts.line_scroll_speed).exp();
+        let before = a.canvas.scale;
+        frame(&mut a, vec![ctrl_wheel(1.0)]);
+        let (scale, pages) = (a.canvas.scale, a.canvas.page_rects.clone());
+        assert!((scale / before - notch_zoom).abs() < 1e-3, "the whole notch in its frame: {before} -> {scale}");
+        for _ in 0..30 {
+            frame(&mut a, Vec::new());
+            assert_eq!(a.canvas.scale, scale, "nothing is left to ease in");
+            assert_eq!(a.canvas.page_rects, pages, "the page was already where and how it stays");
+        }
+        // Quarter notches: a step of about 10% with every second one, nothing in between.
+        frame(&mut a, vec![ctrl_wheel(-0.25)]);
+        assert_eq!(a.canvas.scale, scale, "a quarter notch isn't a step yet");
+        frame(&mut a, vec![ctrl_wheel(-0.25)]);
+        let stepped = a.canvas.scale;
+        assert!((stepped / scale - (-0.1_f32).exp()).abs() < 1e-3, "{scale} -> {stepped}");
+        for _ in 0..30 {
+            frame(&mut a, Vec::new());
+        }
+        assert_eq!(a.canvas.scale, stepped);
+        // Zoom Out (the status bar's minus, View › Zoom Out): the page changes in that frame, and
+        // the frame asks for another at once so the readout beside the slider isn't left behind.
+        assert_ne!(frame(&mut a, Vec::new()), Some(std::time::Duration::ZERO), "idle: nothing to redraw at once");
+        a.run("view.zoomOut", json!({})).unwrap();
+        assert_eq!(frame(&mut a, Vec::new()), Some(std::time::Duration::ZERO));
+        let (scale, pages) = (a.canvas.scale, a.canvas.page_rects.clone());
+        assert!(scale < stepped);
+        frame(&mut a, Vec::new());
+        assert_eq!((a.canvas.scale, &a.canvas.page_rects), (scale, &pages));
+    }
+
     /// Issue #123: zoomed out, pages sit side by side, and clicks map to the page under the pointer.
     #[test]
     fn zoomed_out_pages_sit_side_by_side_and_clicks_land_on_them() {
