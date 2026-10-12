@@ -36,7 +36,11 @@ fmv-macos-events = "=0.1.0"
 # The system's Reduce motion setting (System Settings › Accessibility › Display), read through
 # NSWorkspace: a safe call in these bindings. Already in the build through eframe, rfd and arboard,
 # at this version; this adds only the `NSAccessibility` bindings.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWorkspace", "NSAccessibility", "NSApplication"] }
+objc2 = "0.6"
+# Closing the window must quit through NSApplication rather than by dropping the NSWindow
+# inside the AppKit run loop (see `schedule_macos_terminate`).
+dispatch2 = "0.3"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 # The desktop's animation setting on Linux and the BSDs, read from the XDG settings portal over

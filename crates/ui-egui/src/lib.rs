@@ -17,6 +17,7 @@ pub mod a11y;
 pub mod a11y_pane;
 pub mod backstage;
 pub mod canvas;
+pub mod caret_glide;
 pub mod chrome;
 pub mod colors;
 pub mod content_controls;
@@ -37,6 +38,9 @@ pub mod dialogs_ribbon;
 pub mod dialogs_smart_art;
 pub mod dialogs_templates;
 pub mod equation_tab;
+/// The built-in file browser, for desktops without a system file dialog (#576).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod file_browser;
 pub mod file_dialogs;
 pub mod frame;
 pub mod i18n;
@@ -66,7 +70,7 @@ use serde_json::{Value, json};
 use wordcraft_engine::Session;
 
 pub use control::ControlRequest;
-pub use file_dialogs::FileDialogRequest;
+pub use file_dialogs::{FileDialogAnswer, FileDialogRequest, open_filters};
 
 /// Platform services injected by the host (file dialogs, file I/O).
 #[derive(Default)]
@@ -76,10 +80,11 @@ pub struct Services {
     /// Pick a path to save to, given a suggested name.
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
     /// Desktop: show a native file dialog without blocking the UI thread (#94); used instead of
-    /// `pick_open` / `pick_save` when set. The host sends the picked path (`None` when cancelled)
-    /// through the returned channel once the user answers, and wakes the UI; a dropped sender
-    /// counts as cancelled. The app shows one dialog at a time ([`file_dialogs`]).
-    pub file_dialog: Option<Box<dyn Fn(FileDialogRequest) -> std::sync::mpsc::Receiver<Option<String>>>>,
+    /// `pick_open` / `pick_save` when set. The host sends the picked path (`Ok(None)` when
+    /// cancelled) through the returned channel once the user answers, and wakes the UI; a dropped
+    /// sender counts as cancelled. An `Err` says no system dialog could be shown, and the app shows
+    /// its built-in file browser instead (#576). The app shows one dialog at a time ([`file_dialogs`]).
+    pub file_dialog: Option<Box<dyn Fn(FileDialogRequest) -> std::sync::mpsc::Receiver<FileDialogAnswer>>>,
     /// Web: open a file picker; the file arrives later through `inbox`.
     pub open_async: Option<Box<dyn Fn(&str)>>,
     /// Web: files (name, bytes) delivered asynchronously (picker, drag and drop).
@@ -166,6 +171,10 @@ pub struct UiState {
     /// View › Switch Modes: show pages dark (white text on black), kept between runs. Only the
     /// pages: the interface follows [`UiState::theme`] (#312).
     pub dark_page: bool,
+    /// File › Options › Advanced › Animation: the caret glides to its new place and its blink
+    /// fades, as Word's does on Windows (on, the default), or it jumps and blinks on and off
+    /// (off).
+    pub caret_animation: bool,
     /// Custom keyboard shortcuts (Customize Keyboard, #368); the session owns them while running.
     pub keyboard: wordcraft_engine::KeyMap,
     /// Custom ribbon tabs and groups, hidden tabs and the Quick Access Toolbar (Customize Ribbon,
@@ -226,6 +235,7 @@ impl Default for UiState {
             keytips: crate::keytips::Phase::Off,
             alt_chord_used: false,
             dark_page: false,
+            caret_animation: true,
             keyboard: wordcraft_engine::KeyMap::default(),
             ribbon: wordcraft_engine::RibbonLayout::default(),
             caption_labels: Vec::new(),
@@ -334,6 +344,9 @@ pub struct WordApp {
     autosave_path: Option<std::path::PathBuf>,
     /// The file dialog the host is showing, and what its answer is for ([`file_dialogs`]).
     file_dialog: Option<file_dialogs::PendingDialog>,
+    /// The built-in file browser, when it is open, and the folder it showed last (#576).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) file_browser: file_browser::State,
     /// File › Info: the property field being typed in and the document revision after its last
     /// keystroke, so one visit's keystrokes make a single undo step (and anything else in
     /// between, such as an Undo, starts a new one).
@@ -407,6 +420,8 @@ impl WordApp {
             font_generation: wordcraft_fonts::FontDb::global().generation(),
             dialog_pick: None,
             file_dialog: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            file_browser: file_browser::State::default(),
             info_editing: None,
         }
     }
@@ -929,6 +944,14 @@ impl WordApp {
                 self.open_dialog();
                 json!({})
             }
+            // The built-in file browser (#576), for when the system's file dialog doesn't show up
+            // (desktop only): `purpose` is document (default), picture, recipients or save. A system
+            // dialog still waiting for an answer is given up as cancelled.
+            #[cfg(not(target_arch = "wasm32"))]
+            "ui.fileBrowser" => {
+                self.browse_builtin(s("purpose").unwrap_or("document"));
+                json!({"open": self.file_browser.open.is_some()})
+            }
             // Mailings › Select Recipients › Use an Existing List…: pick a CSV/TSV/text file and
             // load it as the mail-merge recipients. Opens system UI, like `ui.openFileDialog`.
             "ui.openRecipientList" => {
@@ -942,6 +965,16 @@ impl WordApp {
             "ui.discord" => {
                 self.canvas.open_url = Some("https://discord.gg/artcraft".into());
                 json!({})
+            }
+            "ui.caretAnimation" => {
+                // File › Options › Advanced › Animation: `value` true or false turns the caret's
+                // glide and fading blink on or off; no value reads it.
+                match p.get("value") {
+                    None => {}
+                    Some(Value::Bool(on)) => self.ui.caret_animation = *on,
+                    Some(_) => return Some(Err("`value` must be true or false".into())),
+                }
+                json!({"caretAnimation": self.ui.caret_animation})
             }
             // Shape Format › Text › Create Link: the next click on an empty text box links the
             // selected box to it (`shape.link` with that box as the target); Esc cancels.
@@ -1270,6 +1303,8 @@ impl WordApp {
         }
         content_controls::popup(self, &ctx);
         dialogs::show(self, &ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        file_browser::show(self, &ctx);
         colors::show(self, &ctx);
         zotero::show_alert(self, &ctx);
         read_aloud::show(self, &ctx);
@@ -1587,6 +1622,28 @@ mod tests {
 
     fn app() -> WordApp {
         WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default())
+    }
+
+    /// File › Options › Advanced › Animation: the caret's animation is a UI command, kept between
+    /// runs.
+    #[test]
+    fn caret_animation_is_a_ui_command_and_survives_a_restart() {
+        let mut a = app();
+        assert_eq!(a.run("ui.caretAnimation", json!({})).unwrap(), json!({"caretAnimation": true}), "on by default; no value reads it");
+        assert_eq!(a.run("ui.caretAnimation", json!({"value": false})).unwrap(), json!({"caretAnimation": false}));
+        for junk in [json!({"value": "yes"}), json!({"value": 1}), json!({"value": null}), json!({"value": [true]})] {
+            assert!(a.run("ui.caretAnimation", junk).is_err());
+        }
+        assert!(!a.ui.caret_animation, "a rejected value keeps the setting");
+        let saved = serde_json::to_string(&a.prefs()).unwrap();
+        assert!(saved.contains(r#""caretAnimation":false"#), "{saved}");
+        let mut b = app();
+        b.apply_prefs(serde_json::from_str(&saved).unwrap());
+        assert!(!b.ui.caret_animation);
+        // Settings saved before the option existed leave it on.
+        let old: UiState = serde_json::from_str(r#"{"tab":"Insert"}"#).unwrap();
+        assert!(old.caret_animation && old.tab == "Insert");
+        assert_eq!(a.run("ui.caretAnimation", json!({"value": true})).unwrap()["caretAnimation"], true);
     }
 
     /// Insert › Icons (#309) opens the icon picker from the ribbon; an id inserts without it.
