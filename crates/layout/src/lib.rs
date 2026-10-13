@@ -3157,7 +3157,7 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
                 None => {}
             }
             pb.advance(block, body_top);
-            // Repeat header rows, up to the document-wide cap.
+            // Repeat header rows, up to this table's cap.
             if !header_rows.contains(&ri) && header_repeats < MAX_HEADER_REPEATS {
                 for hr in &header_rows {
                     if header_repeats >= MAX_HEADER_REPEATS {
