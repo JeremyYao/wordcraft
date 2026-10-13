@@ -1485,7 +1485,15 @@ fn path_from(b: &kurbo::BezPath) -> Option<Path> {
 /// can't fail the whole export).
 fn load_image(data: &Arc<Vec<u8>>) -> Option<Image> {
     let fmt = image::guess_format(data).ok()?;
-    let dec = image::load_from_memory_with_format(data, fmt).ok()?;
+    // Bound the decode by dimensions so a small file that declares a huge image can't allocate
+    // gigabytes before the side check below: the reader rejects it at header time.
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(data.as_slice())).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_SIDE);
+    limits.max_image_height = Some(MAX_IMAGE_SIDE);
+    limits.max_alloc = None; // bounded by the side limits above; keeps the sizes already accepted
+    reader.limits(limits);
+    let dec = reader.decode().ok()?;
     let (w, h) = (dec.width(), dec.height());
     if w == 0 || h == 0 || w > MAX_IMAGE_SIDE || h > MAX_IMAGE_SIDE {
         return None;

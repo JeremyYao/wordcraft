@@ -166,9 +166,19 @@ fn vectors() -> &'static Mutex<MediaCache<Option<Arc<Vector>>>> {
     C.get_or_init(|| Mutex::new(MediaCache { map: HashMap::new(), bytes: 0 }))
 }
 
-/// Decode an encoded image to a premultiplied pixmap.
+/// Largest side (pixels) a document picture may decode to when rasterising a page.
+const MAX_DECODE_SIDE: u32 = 16_384;
+
+/// Decode an encoded image to a premultiplied pixmap, bounding the decode so a small file that
+/// declares huge dimensions can't exhaust memory during paint.
 pub fn decode_pixmap(bytes: &[u8]) -> Option<Pixmap> {
-    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_SIDE);
+    limits.max_image_height = Some(MAX_DECODE_SIDE);
+    limits.max_alloc = Some(512 << 20);
+    reader.limits(limits);
+    let img = reader.decode().ok()?.to_rgba8();
     let (w, h) = img.dimensions();
     premul_pixmap(w, h, img.as_raw())
 }
